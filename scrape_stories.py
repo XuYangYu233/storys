@@ -31,6 +31,8 @@ HEADERS = {
 
 # Windows 文件名非法字符
 ILLEGAL_CHARS = re.compile(r'[\\/:*?"<>|\r\n\t]')
+# 段落块标记（正文中不会出现的控制字符）
+BLOCK_MARKER = "\x01"
 
 
 def random_delay() -> None:
@@ -70,11 +72,18 @@ def extract_title(soup: BeautifulSoup, article) -> str:
 
 
 def extract_paragraphs(article) -> list[str]:
-    """按原文的换行与段首缩进重组段落。
+    """按原文的结构重组段落。
 
-    网页正文用 <br> 硬换行，段首带若干空格；行首无缩进的行是上一句的续行。
+    正文有两种排版：<br> 硬换行 + 段首缩进，或 <p> 标签分段。
+    行首无缩进的行是上一句的续行。
     """
-    raw_text = article.get_text("\n").replace("\xa0", " ")
+    # 把 <p>/<li> 块转成带段落标记的文本，避免整篇被拼成一段
+    for block in article.find_all(["p", "li"]):
+        block.replace_with(f"\n{BLOCK_MARKER}{block.get_text(chr(10))}\n")
+
+    raw_text = article.get_text("\n")
+    raw_text = raw_text.replace("\xa0", " ").replace("\u3000", " ")
+
     paragraphs: list[str] = []
     current = ""
 
@@ -83,7 +92,10 @@ def extract_paragraphs(article) -> list[str]:
         if not line.strip():
             continue
 
-        stripped = line.strip()
+        forced_break = line.lstrip().startswith(BLOCK_MARKER)
+        stripped = line.strip().lstrip(BLOCK_MARKER).strip()
+        if not stripped:
+            continue
         indent = len(line) - len(line.lstrip(" "))
 
         # 章节标记，如 "◇  一  ◇"
@@ -94,7 +106,7 @@ def extract_paragraphs(article) -> list[str]:
             paragraphs.append(stripped)
             continue
 
-        if indent >= 2 or not current:
+        if forced_break or indent >= 2 or not current:
             if current:
                 paragraphs.append(current)
             current = stripped
@@ -155,6 +167,9 @@ def main() -> int:
 
         title = extract_title(soup, article)
         paragraphs = extract_paragraphs(article)
+        # 部分页面正文开头重复了标题，去掉
+        if paragraphs and paragraphs[0] == title:
+            paragraphs.pop(0)
         if not paragraphs:
             skipped.append((page_id, "正文为空"))
             print("    跳过：正文为空", flush=True)
